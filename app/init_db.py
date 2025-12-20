@@ -1,10 +1,12 @@
+import os
 import mysql.connector
 
 db_config = {
-    'host': 'localhost',
-    'user': 'joke_user',
-    'password': 'joke_pass123',
-    'database': 'jokes_db'
+    'host': os.getenv('DB_HOST', 'mysql'),
+    'user': os.getenv('DB_USER', 'joke_user'),
+    'password': os.getenv('DB_PASSWORD', 'joke_pass123'),
+    'database': os.getenv('DB_NAME', 'jokes_db'),
+    'port': int(os.getenv('DB_PORT', '3306'))
 }
 
 jokes = [
