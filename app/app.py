@@ -1,20 +1,38 @@
-from flask import Flask, jsonify, render_template_string, request, redirect, url_for
-import mysql.connector
-import redis
+import os
 import time
+import redis
+import mysql.connector
+from flask import Flask, jsonify, render_template_string, request, redirect, url_for
+
 
 app = Flask(__name__)
 
+DB_HOST = os.getenv("DB_HOST", "mysql")
+DB_USER = os.getenv("DB_USER", "joke_user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "joke_pass123")
+DB_NAME = os.getenv("DB_NAME", "jokes_db")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+
+APP_PORT = int(os.getenv("APP_PORT", "5000"))
+
 # Database configuration
 db_config = {
-    'host': 'localhost',
-    'user': 'joke_user',
-    'password': 'joke_pass123',
-    'database': 'jokes_db'
+    "host": DB_HOST,
+    "user": DB_USER,
+    "password": DB_PASSWORD,
+    "database": DB_NAME,
+    "port": DB_PORT
 }
 
 # Redis configuration
-redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+redis_client = redis.Redis(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    decode_responses=True
+)
 
 # Main page HTML template
 HTML_TEMPLATE = '''
@@ -751,4 +769,4 @@ def health():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=APP_PORT, debug=False, use_reloader=False)
