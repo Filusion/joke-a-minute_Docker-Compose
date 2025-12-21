@@ -34,9 +34,10 @@ services:
     restart: unless-stopped
 
   app:
-    build:
-      context: ./app
-      dockerfile: Dockerfile
+   #  build:
+     #  context: ./app
+      # dockerfile: Dockerfile
+    image: ghcr.io/filusion/joke-a-minute_docker-compose:latest
     container_name: joke-app
     environment:
       DB_HOST: mysql
