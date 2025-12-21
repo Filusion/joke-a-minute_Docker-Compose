@@ -951,3 +951,202 @@ docker compose exec app /bin/bash
 # Remove everything (including volumes)
 docker compose down -v
 ```
+
+# CI/CD Pipeline Documentation
+
+## Overview
+
+This document describes the Continuous Integration (CI) pipeline implemented for the Joke-a-Minute application using GitHub Actions. The pipeline automatically builds, tags, and publishes Docker images to GitHub Container Registry (GHCR) whenever code is pushed to the repository.
+
+## Architecture
+
+The CI pipeline consists of:
+- **GitHub Actions**: Automated workflow engine
+- **GitHub Container Registry (GHCR)**: Docker image storage
+- **Multi-stage Dockerfile**: Optimized Python application container
+- **Docker Compose**: Production deployment orchestration
+
+## Implementation Steps
+
+### 1. GitHub Actions Workflow Setup
+
+**File Location**: `.github/workflows/docker-build-push.yml`
+
+The workflow file was created directly in GitHub:
+1. Navigate to repository → **Actions** tab
+2. Select **"Set up a workflow yourself"**
+3. Created `docker-build-push.yml` with the workflow configuration
+
+### 2. Workflow Configuration
+
+```yaml
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+```
+
+**Trigger Conditions:**
+- Pushes to `main` or `develop` branches
+- Git tags starting with `v` (e.g., `v1.0.0`, `v2.1.3`)
+- Pull requests targeting `main` branch (build only, no push)
+
+### 3. Workflow Jobs
+
+#### Job: `build-and-push`
+
+**Step 1: Checkout Repository**
+```yaml
+- name: Checkout repository
+  uses: actions/checkout@v4
+```
+Clones the repository code into the GitHub Actions runner.
+
+**Step 2: Set up Docker Buildx**
+```yaml
+- name: Set up Docker Buildx
+  uses: docker/setup-buildx-action@v3
+```
+Configures Docker Buildx for advanced build features including multi-platform builds and build caching.
+
+**Step 3: Authenticate to GHCR**
+```yaml
+- name: Log in to GitHub Container Registry
+  if: github.event_name != 'pull_request'
+  uses: docker/login-action@v3
+  with:
+    registry: ${{ env.REGISTRY }}
+    username: ${{ github.actor }}
+    password: ${{ secrets.GITHUB_TOKEN }}
+```
+Authenticates to GitHub Container Registry using the automatically provided `GITHUB_TOKEN`. Authentication is skipped for pull requests to prevent unauthorized image pushes.
+
+**Step 4: Generate Image Metadata**
+```yaml
+- name: Extract metadata (tags, labels)
+  id: meta
+  uses: docker/metadata-action@v5
+  with:
+    images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+    tags: |
+      type=ref,event=branch
+      type=ref,event=pr
+      type=semver,pattern={{version}}
+      type=semver,pattern={{major}}.{{minor}}
+      type=semver,pattern={{major}}
+      type=sha,prefix={{branch}}-
+      type=raw,value=latest,enable={{is_default_branch}}
+```
+
+**Generated Tags:**
+- `latest` - Latest build from the default branch (main)
+- `main`, `develop` - Branch-specific tags
+- `v1.0.0`, `v1.0`, `v1` - Semantic versioning tags
+- `main-abc1234` - Branch name + short commit SHA
+- `pr-123` - Pull request number (for PR builds)
+
+**Step 5: Build and Push Image**
+```yaml
+- name: Build and push Docker image
+  uses: docker/build-push-action@v5
+  with:
+    context: ./app
+    file: ./app/Dockerfile
+    push: ${{ github.event_name != 'pull_request' }}
+    tags: ${{ steps.meta.outputs.tags }}
+    labels: ${{ steps.meta.outputs.labels }}
+    cache-from: type=gha
+    cache-to: type=gha,mode=max
+```
+
+**Key Features:**
+- **Context**: `./app` directory contains the application code
+- **Build Cache**: Uses GitHub Actions cache to speed up builds
+- **Conditional Push**: Only pushes images for non-PR events
+- **Multi-tagging**: Applies all generated tags to the built image
+
+## Host Configuration Changes
+
+### 1. Updated `docker-compose.yml`
+
+**Before (Building Locally):**
+```yaml
+app:
+  build:
+    context: ./app
+    dockerfile: Dockerfile
+  container_name: joke-app
+  # ... rest of configuration
+```
+
+**After (Using Pre-built Image):**
+```yaml
+app:
+  image: ghcr.io/filusion/joke-a-minute_docker-compose:latest
+  container_name: joke-app
+  # ... rest of configuration
+```
+
+**Changes Made:**
+- Removed `build` section
+- Added `image` directive pointing to GHCR
+- Application now pulls pre-built images instead of building locally
+
+### 2. Initial Deployment
+
+The following commands were executed on the production VM to deploy the containerized application:
+
+```bash
+# Stop and remove all existing containers and volumes
+docker-compose down -v
+
+# Pull the latest image from GitHub Container Registry
+docker pull ghcr.io/filusion/joke-a-minute_docker-compose:latest
+
+# Start all services using Docker Compose
+docker-compose up -d
+
+# Verify container status
+docker-compose ps
+```
+
+**Note**: The `-v` flag removes named volumes. During initial setup, this was necessary to clean up conflicting container states. For routine updates, omit this flag to preserve data.
+
+## Deployment Workflow
+
+### Manual Deployment Process
+
+When a new version needs to be deployed to production:
+
+```bash
+# 1. Navigate to project directory
+cd ~/joke-app
+
+# 2. Pull the latest image
+docker pull ghcr.io/filusion/joke-a-minute_docker-compose:latest
+
+# 3. Stop the application container
+docker-compose stop app
+
+# 4. Remove the old container
+docker-compose rm -f app
+
+# 5. Start the new container
+docker-compose up -d app
+
+# 6. Verify deployment
+docker-compose ps app
+docker-compose logs --tail=50 app
+```
