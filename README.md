@@ -773,8 +773,13 @@ docker compose ps nginx
 ``` bash
   docker compose exec nginx nginx -s reload
 ```
+#### 5. Initialize the database
 
-#### 5. Access the Application
+```bash
+  docker exec -it joke-app python init_db.py
+```
+
+#### 6. Access the Application
 
 * The app is now available at:
 
