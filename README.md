@@ -154,17 +154,19 @@ After cloning, your project structure should look like this:
 
 ```
 joke-a-minute_Docker-Compose/
-├── app/
-│   ├── Dockerfile
+├── app
 │   ├── app.py
+│   ├── Dockerfile
 │   ├── init_db.py
 │   └── requirements.txt
-├── nginx/
-│   ├── nginx.conf
-│   └── conf.d/
-│       └── app.conf
-├── docker-compose.yml
+├── certbot
+│   └── init-certs.sh
 ├── docker-compose.test.yml
+├── docker-compose.yml
+├── nginx
+│   ├── conf.d
+│   │   └── app.conf
+│   └── nginx.conf
 └── README.md
 ```
 
@@ -409,6 +411,44 @@ nginx:
 - `certbot_www`: Let's Encrypt challenge files (for domain verification)
 - `certbot_conf`: SSL certificates and keys
 
+#### Service: Certbot-init
+```yaml
+certbot-init:
+  image: certbot/certbot:latest
+  container_name: joke-certbot-init
+  volumes:
+    - ./certbot/init-certs.sh:/init-certs.sh:ro
+    - certbot_www:/var/www/certbot
+    - certbot_conf:/etc/letsencrypt
+  entrypoint: /init-certs.sh
+  depends_on:
+    - nginx
+  networks:
+    - backend
+```
+
+**Purpose:** This is a one-time initialization service that obtains the initial SSL certificate from Let's Encrypt before the main certbot renewal service starts.
+
+**How it differs from the main certbot service:**
+- Runs once at startup (not continuously)
+- Executes the `init-certs.sh` script to request new certificates
+- Exits after certificate generation (won't restart automatically)
+- Must run after Nginx is up (ensured by `depends_on: nginx`)
+
+**Volume mounts explained:**
+- `./certbot/init-certs.sh:/init-certs.sh:ro`: Mounts the initialization script as read-only
+- `certbot_www`: Shared with Nginx for Let's Encrypt domain verification challenges
+- `certbot_conf`: Stores the generated SSL certificates
+
+**Workflow:**
+1. Docker Compose starts Nginx first (due to `depends_on`)
+2. `certbot-init` container starts and runs the `init-certs.sh` script
+3. Script requests SSL certificate from Let's Encrypt
+4. Certificate is saved to the `certbot_conf` volume
+5. Container exits after completion
+6. Nginx can now use the generated certificates
+
+
 #### Service: Certbot
 
 ```yaml
@@ -496,460 +536,250 @@ This line includes all `.conf` files from the `conf.d/` directory, allowing modu
 
 #### Site Configuration: app.conf
 
-**Location:** `nginx/conf.d/app.conf`
-
-```nginx
-server {
-    listen 80;
-    server_name _;
-    
-    resolver 127.0.0.11 valid=30s;
-```
-
-- **listen 80:** Accept HTTP connections on port 80
-- **server_name _:** Accept requests for any domain (wildcard)
-- **resolver 127.0.0.11:** Docker's internal DNS server, allowing Nginx to resolve container names like `joke-app`
-
-```nginx
-location /.well-known/acme-challenge/ {
-    root /var/www/certbot;
-}
-```
-
-This location block serves Let's Encrypt challenge files. When you request an SSL certificate, Let's Encrypt verifies domain ownership by accessing a file at `http://yourdomain.com/.well-known/acme-challenge/random-token`. Nginx serves these files from the shared `certbot_www` volume.
-
-```nginx
-location / {
-    set $upstream http://joke-app:5000;
-    proxy_pass $upstream;
-    
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-```
-
-This is the reverse proxy configuration that forwards all other requests to the Flask application:
-
-- **set $upstream:** Uses a variable to prevent Nginx from crashing if the app container isn't available at startup
-- **proxy_pass:** Forwards the request to the Flask app running on `joke-app:5000`
-- **Headers:**
-  - `Host`: Preserves the original hostname
-  - `X-Real-IP`: Passes the client's real IP address (important for logging)
-  - `X-Forwarded-For`: Chain of proxies the request passed through
-  - `X-Forwarded-Proto`: Indicates whether the original request was HTTP or HTTPS
-
-```nginx
-proxy_connect_timeout 60s;
-proxy_send_timeout 60s;
-proxy_read_timeout 60s;
-```
-
-Timeout settings prevent connections from hanging indefinitely:
-- **connect_timeout:** How long to wait for a connection to the Flask app
-- **send_timeout:** How long to wait when sending data to the Flask app
-- **read_timeout:** How long to wait for a response from the Flask app
-
-## Deployment
-
-### Testing Deployment (without SSL)
-
-First, test the application with the simplified configuration:
-
-```bash
-docker compose -f docker-compose.test.yml up --build -d
-```
-
-- `-f docker-compose.test.yml`: Use the test configuration file
-- `--build`: Rebuild images if Dockerfile or code has changed
-- `-d`: Run in detached mode (background)
-
-**Verify the application:**
-```bash
-docker compose -f docker-compose.test.yml ps
-```
-
-All services should show status as "Up" or "Up (healthy)".
-
-**Access the application:**
-Open your browser and navigate to `http://localhost:5000` or `http://your-server-ip:5000`.
-
-**View logs:**
-```bash
-docker compose -f docker-compose.test.yml logs -f app
-```
-
-The `-f` flag follows the logs in real-time (like `tail -f`).
-
-**Stop the test environment:**
-```bash
-docker compose -f docker-compose.test.yml down
-```
-
-This stops and removes all containers but preserves data in volumes.
-
-### Production Deployment (with Nginx and SSL)
-
-Before deploying to production, ensure:
-- Your domain's DNS A record points to your server's IP address
-- Ports 80 and 443 are open in your firewall
-
-#### Step 1: Update Nginx configuration with your domain
-
-Edit `nginx/conf.d/app.conf` and replace `server_name _;` with your actual domain:
-
-```nginx
-server_name yourdomain.com www.yourdomain.com;
-```
-
-#### Step 2: Start the stack
-
-```bash
-docker compose up --build -d
-```
-
-This starts all services including Nginx and Certbot.
-
-**Verify all services are running:**
-```bash
-docker compose ps
-```
-
-You should see:
-- `joke-mysql` - Up (healthy)
-- `joke-redis` - Up (healthy)
-- `joke-app` - Up
-- `joke-nginx` - Up
-- `joke-certbot` - Up
-
-#### Step 3: Check logs for errors
-
-```bash
-docker compose logs -f
-```
-
-Look for any error messages. Common issues:
-- Database connection failures (check MySQL is healthy)
-- Redis connection issues (check Redis is healthy)
-- Nginx configuration syntax errors
-
-## SSL/TLS Setup
-
-### Initial Certificate Obtainment
-
-To obtain your first SSL certificate from Let's Encrypt:
-
-```bash
-docker compose exec certbot certbot certonly --webroot \
-  --webroot-path=/var/www/certbot \
-  --email your-email@example.com \
-  --agree-tos \
-  --no-eff-email \
-  -d yourdomain.com -d www.yourdomain.com
-```
-
-**Parameter explanation:**
-- `certonly`: Only obtain the certificate, don't install it
-- `--webroot`: Use the webroot method (places challenge files in `/var/www/certbot`)
-- `--email`: Your email for renewal notifications
-- `--agree-tos`: Agree to Let's Encrypt Terms of Service
-- `--no-eff-email`: Don't share your email with EFF
-- `-d`: Domains to include in the certificate (you can list multiple)
-
-**Expected output:**
-```
-Congratulations! Your certificate and chain have been saved at:
-/etc/letsencrypt/live/yourdomain.com/fullchain.pem
-Your key file has been saved at:
-/etc/letsencrypt/live/yourdomain.com/privkey.pem
-```
-
-### Enable HTTPS in Nginx
-
-After obtaining certificates, update `nginx/conf.d/app.conf` to enable HTTPS:
-
-```nginx
-# Redirect HTTP to HTTPS
-server {
-    listen 80;
-    server_name yourdomain.com www.yourdomain.com;
-    
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-    
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-# HTTPS server
-server {
-    listen 443 ssl http2;
-    server_name yourdomain.com www.yourdomain.com;
-    
-    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-    
-    resolver 127.0.0.11 valid=30s;
-    
-    location / {
-        set $upstream http://joke-app:5000;
-        proxy_pass $upstream;
-        
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-}
-```
-
-**Reload Nginx:**
-```bash
-docker compose exec nginx nginx -s reload
-```
-
-Your application is now accessible via HTTPS at `https://yourdomain.com`!
-
-### Automatic Renewal
-
-The Certbot container automatically renews certificates every 12 hours. Let's Encrypt certificates expire after 90 days, but Certbot renews them when they have 30 days or less remaining.
-
-**Verify renewal process:**
-```bash
-docker compose logs certbot
-```
-
-You should see entries like:
-```
-Cert not yet due for renewal
-```
-
-**Force a test renewal (dry run):**
-```bash
-docker compose exec certbot certbot renew --dry-run
-```
-
-This simulates renewal without actually requesting a new certificate.
-
-## Maintenance
-
-### Viewing Logs
-
-**All services:**
-```bash
-docker compose logs -f
-```
-
-**Specific service:**
-```bash
-docker compose logs -f app
-docker compose logs -f nginx
-docker compose logs -f mysql
-```
-
-**Last 100 lines:**
-```bash
-docker compose logs --tail=100 app
-```
-
-### Restarting Services
-
-**Restart a single service:**
-```bash
-docker compose restart app
-```
-
-**Restart all services:**
-```bash
-docker compose restart
-```
-
-### Updating the Application
-
-When you update application code:
-
-```bash
-git pull
-docker compose up --build -d
-```
-
-This rebuilds the app image with new code and restarts the container.
-
-### Database Backups
-
-**Backup MySQL database:**
-```bash
-docker compose exec mysql mysqldump -u joke_user -p joke_pass123 jokes_db > backup_$(date +%Y%m%d).sql
-```
-
-**Restore from backup:**
-```bash
-docker compose exec -T mysql mysql -u joke_user -p joke_pass123 jokes_db < backup_20250101.sql
-```
-
-### Stopping the Application
-
-**Stop all services (keeps containers):**
-```bash
-docker compose stop
-```
-
-**Stop and remove containers (preserves volumes):**
-```bash
-docker compose down
-```
-
-**Stop and remove everything including volumes:**
-```bash
-docker compose down -v
-```
-
-⚠️ **Warning:** The `-v` flag permanently deletes all data!
-
-## Troubleshooting
-
-### Application won't start
-
-**Check service status:**
-```bash
-docker compose ps
-```
-
-**Check service health:**
-```bash
-docker inspect joke-mysql | grep -A 10 Health
-```
-
-**Check if ports are in use:**
-```bash
-sudo netstat -tlnp | grep -E '80|443|3306|6379|5000'
-```
-
-### Database connection errors
-
-**Ensure MySQL is healthy:**
-```bash
-docker compose exec mysql mysqladmin ping -h localhost
-```
-
-**Check environment variables:**
-```bash
-docker compose exec app env | grep DB_
-```
-
-**Test database connection manually:**
-```bash
-docker compose exec mysql mysql -u joke_user -p joke_pass123 jokes_db -e "SELECT 1;"
-```
-
-### Redis connection errors
-
-**Test Redis connectivity:**
-```bash
-docker compose exec redis redis-cli ping
-```
-
-Expected output: `PONG`
-
-### Nginx configuration errors
-
-**Test configuration syntax:**
-```bash
-docker compose exec nginx nginx -t
-```
-
-**View Nginx error log:**
-```bash
-docker compose logs nginx | grep error
-```
-
-### SSL certificate issues
-
-**Check certificate expiration:**
-```bash
-docker compose exec certbot certbot certificates
-```
-
-**Force certificate renewal:**
-```bash
-docker compose exec certbot certbot renew --force-renewal
-```
-
-### Permission denied errors
-
-If you see Docker permission errors:
-```bash
-newgrp docker
-```
-
-Or restart your terminal session after adding yourself to the Docker group.
-
-### Containers keep restarting
-
-**Check resource usage:**
-```bash
-docker stats
-```
-
-**Check for OOM (Out of Memory) kills:**
-```bash
-dmesg | grep -i kill
-```
-
-**Increase container memory limits in docker-compose.yml:**
-```yaml
-app:
-  deploy:
-    resources:
-      limits:
-        memory: 512M
-```
-
-### Need more help?
-
-1. Check container logs: `docker compose logs -f [service_name]`
-2. Inspect container: `docker inspect joke-app`
-3. Access container shell: `docker compose exec app /bin/bash`
-4. Review Docker documentation: https://docs.docker.com/
+This configuration file defines an **NGINX reverse proxy setup** for a web application running inside a Docker environment. It handles both **HTTP (port 80)** and **HTTPS (port 443)** traffic, integrates **Let’s Encrypt** for SSL certificates, and forwards requests to a backend Flask application.
 
 ---
 
-## Quick Reference Commands
+### HTTP Server (Port 80)
+
+The first `server` block listens on **port 80** and serves two main purposes:
+
+- **Domain handling**  
+  The server responds to requests for `devops-vm-43.lrk.si`.
+
+- **Let’s Encrypt ACME challenge**  
+  The path `/.well-known/acme-challenge/` is used by Certbot to verify domain ownership.  
+  Files for this challenge are served from `/var/www/certbot`.
+
+- **Reverse proxy to the application**  
+  All other HTTP requests are forwarded to the backend service:
+  - The application runs at `http://joke-app:5000`
+  - `joke-app` is resolved via Docker’s internal DNS (`127.0.0.11`)
+
+- **Forwarded headers**  
+  Headers such as `Host`, `X-Real-IP`, and `X-Forwarded-*` ensure that the backend application receives correct client and protocol information.
+
+- **Timeout configuration**  
+  Connection, send, and read timeouts are set to 60 seconds to avoid premature connection drops.
+
+---
+
+### HTTPS Server (Port 443)
+
+The second `server` block enables **secure HTTPS communication** using SSL/TLS:
+
+- **SSL & HTTP/2 support**  
+  - Listens on port 443 with SSL and HTTP/2 enabled
+  - Uses TLS versions 1.2 and 1.3 for secure communication
+
+- **SSL certificates**  
+  Certificates are provided by Let’s Encrypt and loaded from:
+  - `/etc/letsencrypt/live/devops-vm-43.lrk.si/fullchain.pem`
+  - `/etc/letsencrypt/live/devops-vm-43.lrk.si/privkey.pem`
+
+- **Security configuration**
+  - Strong cipher suites are enforced
+  - Weak or insecure algorithms are disabled
+  - SSL sessions are cached for better performance
+
+- **Reverse proxy to Flask app**  
+  HTTPS requests are forwarded to the same backend service (`joke-app:5000`) as HTTP traffic.
+
+- **Docker DNS resolver**  
+  The internal Docker resolver is used again to dynamically resolve container IP addresses.
+
+### Summary
+
+This `app.conf` file:
+- Acts as a **reverse proxy** between users and the Flask application
+- Enables **automatic HTTPS** via Let’s Encrypt
+- Supports **Docker-based service discovery**
+- Ensures secure, reliable, and properly forwarded client connections
+
+It is designed for a production-like environment where NGINX handles networking, security, and certificate management while the application runs independently in a container.
+
+
+### init-certs.sh
+
+**Purpose:** This shell script automates the initial SSL certificate generation from Let's Encrypt, avoiding the need for manual certificate requests.
+
+```shellscript
+#!/bin/sh
+
+# Configuration
+DOMAIN="devops-vm-43.lrk.si"
+EMAIL="admin@devops-vm-43.lrk.si"  
+STAGING="--staging"  # Remove this line for production certs
+
+# Check if certificate already exists
+if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+    echo "Certificate for $DOMAIN already exists. Skipping generation."
+    exit 0
+fi
+
+echo "Certificate not found. Generating new certificate for $DOMAIN..."
+
+# Wait for Nginx to be ready
+echo "Waiting for Nginx to be ready..."
+sleep 15 
+
+# Request certificate
+certbot certonly --webroot \
+    --webroot-path=/var/www/certbot \
+    --email "$EMAIL" \
+    --agree-tos \
+    --no-eff-email \
+    $STAGING \
+    -d "$DOMAIN" \
+    --non-interactive
+
+if [ $? -eq 0 ]; then
+    echo "Certificate successfully generated for $DOMAIN"
+else
+    echo "Failed to generate certificate for $DOMAIN"
+    exit 1
+fi
+```
+
+#### Configuration Variables
+
+- **DOMAIN:** The domain name for which to generate the SSL certificate
+- **EMAIL:** Contact email for Let's Encrypt notifications (certificate expiration warnings, security notices)
+- **STAGING:** Uses Let's Encrypt's staging environment for testing
+  - Staging certificates are not trusted by browsers (will show security warnings)
+  - **Why use staging?** Let's Encrypt has rate limits (5 certificates per domain per week). Staging has higher limits and is perfect for testing
+  - **For production:** Remove the `STAGING="--staging"` line or comment it out
+
+#### Script Logic
+
+1. **Certificate existence check:**
+```bash
+   if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+```
+   - Checks if certificates already exist to avoid unnecessary requests
+   - Prevents hitting Let's Encrypt rate limits on repeated runs
+   - Exits early if certificates are found
+
+2. **Nginx readiness wait:**
+```bash
+   sleep 15
+```
+   - Gives Nginx time to fully start and begin serving HTTP traffic
+   - Let's Encrypt needs to access `http://DOMAIN/.well-known/acme-challenge/` for domain verification
+   - If Nginx isn't ready, certificate request will fail
+
+3. **Certificate request (certbot certonly):**
+```bash
+   certbot certonly --webroot \
+       --webroot-path=/var/www/certbot \
+       --email "$EMAIL" \
+       --agree-tos \
+       --no-eff-email \
+       $STAGING \
+       -d "$DOMAIN" \
+       --non-interactive
+```
+
+   **Flag explanations:**
+   - `certonly`: Only obtain the certificate, don't install it (Nginx configuration handles installation)
+   - `--webroot`: Use the webroot authentication method (places verification files in a directory that Nginx serves)
+   - `--webroot-path=/var/www/certbot`: Directory where Let's Encrypt verification files are placed
+   - `--email "$EMAIL"`: Contact email for urgent renewal and security notices
+   - `--agree-tos`: Automatically agree to Let's Encrypt Terms of Service
+   - `--no-eff-email`: Don't share email with the Electronic Frontier Foundation (EFF)
+   - `$STAGING`: If set, uses staging environment (test certificates)
+   - `-d "$DOMAIN"`: Domain name to generate certificate for
+   - `--non-interactive`: Run without prompts (required for automation)
+
+4. **Success/failure handling:**
+```bash
+   if [ $? -eq 0 ]; then
+```
+   - `$?` contains the exit code of the last command (0 = success, non-zero = error)
+   - Exits with error code 1 if certificate generation fails, which Docker logs and can alert on
+
+#### Let's Encrypt Validation Process
+
+When this script runs, the following happens:
+
+1. **Certbot sends a certificate request** to Let's Encrypt servers
+2. **Let's Encrypt responds** with a challenge: "Prove you control this domain"
+3. **Certbot creates a verification file** in `/var/www/certbot/.well-known/acme-challenge/`
+4. **Let's Encrypt makes an HTTP request** to `http://devops-vm-43.lrk.si/.well-known/acme-challenge/[random-string]`
+5. **Nginx serves the verification file** (configured in nginx config to serve files from `/var/www/certbot`)
+6. **Let's Encrypt verifies** the file content matches what it expects
+7. **Certificate is issued** and saved to `/etc/letsencrypt/live/$DOMAIN/`
+
+**This is why Nginx must be running on port 80 and serving the `.well-known/acme-challenge/` location before certificates can be obtained.**
+
+#### Switching from Staging to Production
+
+Once you've tested and verified the setup works with staging certificates:
+
+1. Edit `init-certs.sh` and remove or comment out:
+```bash
+   # STAGING="--staging"
+```
+
+2. Remove existing staging certificates:
+```bash
+   docker compose down
+   sudo rm -rf certbot_conf/*
+```
+
+3. Restart and generate production certificates:
+```bash
+   docker compose up -d
+```
+
+Production certificates will be trusted by all browsers and valid for 90 days.
+
+## Deployment 
+
+This guide explains how to deploy the application using Docker, Nginx, and automatic SSL via Let’s Encrypt.
+
+---
+
+#### 1. Prepare Nginx
+
+- Edit `nginx/conf.d/app.conf` and **comment out the HTTPS server block**, leaving only HTTP active.  
+- This allows Certbot to generate the SSL certificate first.
+
+---
+
+#### 2. Start Docker services
 
 ```bash
-# Start all services
 docker compose up -d
+docker compose ps nginx
 
-# Stop all services
-docker compose down
+```
+* Verify that Nginx is running
 
-# View logs
-docker compose logs -f
+#### 3. Generate SSL Certificate
 
-# Rebuild and restart
-docker compose up --build -d
+``` bash 
+  docker compose up certbot-init
+  docker compose logs -f certbot-init
+```
+* Wait until the certificate is successfully generated.
 
-# Check service status
-docker compose ps
+#### 4. Enable HTTPS
 
-# Execute command in container
-docker compose exec app python init_db.py
+* Uncomment the HTTPS server block in app.conf.
 
-# Access container shell
-docker compose exec app /bin/bash
+* Reload Nginx to apply changes:
 
-# Remove everything (including volumes)
-docker compose down -v
+``` bash
+  docker compose exec nginx nginx -s reload
+```
+
+#### 5. Access the Application
+
+* The app is now available at:
+
+``` txt
+  https://devops-sk-10.lrk.si/
 ```
 
 # CI/CD Pipeline Documentation

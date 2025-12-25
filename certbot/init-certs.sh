@@ -1,8 +1,8 @@
 #!/bin/sh
 
 # Configuration
-DOMAIN="devops-vm-43.lrk.si"
-EMAIL="admin@devops-vm-43.lrk.si"  
+DOMAIN="devops-sk-10.lrk.si"
+EMAIL="admin@devops-sk-10.lrk.si"  
 STAGING="--staging"  # Remove this line for production certs
 
 # Check if certificate already exists
