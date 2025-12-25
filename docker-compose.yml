@@ -74,6 +74,19 @@ services:
       - backend
     restart: unless-stopped
 
+  certbot-init:
+    image: certbot/certbot:latest
+    container_name: joke-certbot-init
+    volumes:
+      - ./certbot/init-certs.sh:/init-certs.sh:ro
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+    entrypoint: /init-certs.sh
+    depends_on:
+      - nginx
+    networks:
+      - backend
+
   certbot:
     image: certbot/certbot:latest
     container_name: joke-certbot
